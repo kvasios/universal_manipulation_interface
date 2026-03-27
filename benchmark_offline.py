@@ -15,6 +15,7 @@ This script never sends actions to the robot. It only loads recorded,
 SLAM-processed data and measures policy inference latency / throughput.
 """
 
+import contextlib
 import os
 import pathlib
 import time
@@ -338,6 +339,33 @@ def move_obs_to_device(obs_cpu: Dict[str, torch.Tensor], device: torch.device) -
     return dict_apply(obs_cpu, lambda x: x.unsqueeze(0).to(device, non_blocking=True))
 
 
+def resolve_amp_dtype(amp: str) -> Optional[torch.dtype]:
+    if amp == "none":
+        return None
+    if amp == "fp16":
+        return torch.float16
+    if amp == "bf16":
+        return torch.bfloat16
+    raise ValueError(f"Unsupported amp mode: {amp}")
+
+
+def get_autocast_context(device: torch.device, amp_dtype: Optional[torch.dtype]):
+    if amp_dtype is None or device.type != "cuda":
+        return contextlib.nullcontext()
+    return torch.autocast(device_type="cuda", dtype=amp_dtype)
+
+
+def apply_inference_optimizations(policy, device: torch.device, compile_policy: bool):
+    if compile_policy:
+        if not hasattr(torch, "compile"):
+            raise RuntimeError("torch.compile is not available in this PyTorch build.")
+        if device.type != "cuda":
+            print("Warning: --compile is mainly useful on CUDA; continuing anyway.")
+        policy.obs_encoder = torch.compile(policy.obs_encoder, mode="reduce-overhead")
+        policy.model = torch.compile(policy.model, mode="reduce-overhead")
+    return policy
+
+
 def maybe_sync(device: torch.device):
     if device.type == "cuda":
         torch.cuda.synchronize(device)
@@ -349,6 +377,7 @@ def benchmark_policy(
     samples_device: Optional[List[Dict[str, torch.Tensor]]],
     device: torch.device,
     warmup: int,
+    amp_dtype: Optional[torch.dtype],
 ) -> Dict[str, List[float]]:
     results = {
         "transfer_and_predict_ms": [],
@@ -360,7 +389,8 @@ def benchmark_policy(
         policy.reset()
         for i in range(warmup):
             obs_device = move_obs_to_device(samples_cpu[i], device)
-            _ = policy.predict_action(obs_device)
+            with get_autocast_context(device, amp_dtype):
+                _ = policy.predict_action(obs_device)
         maybe_sync(device)
 
         policy.reset()
@@ -368,7 +398,8 @@ def benchmark_policy(
             maybe_sync(device)
             start_t = time.perf_counter()
             obs_device = move_obs_to_device(obs_cpu, device)
-            _ = policy.predict_action(obs_device)
+            with get_autocast_context(device, amp_dtype):
+                _ = policy.predict_action(obs_device)
             maybe_sync(device)
             end_t = time.perf_counter()
             results["transfer_and_predict_ms"].append((end_t - start_t) * 1000.0)
@@ -378,7 +409,8 @@ def benchmark_policy(
             for obs_device in samples_device:
                 maybe_sync(device)
                 start_t = time.perf_counter()
-                _ = policy.predict_action(obs_device)
+                with get_autocast_context(device, amp_dtype):
+                    _ = policy.predict_action(obs_device)
                 maybe_sync(device)
                 end_t = time.perf_counter()
                 results["predict_only_ms"].append((end_t - start_t) * 1000.0)
@@ -425,12 +457,26 @@ def summarize_latency(name: str, values_ms: List[float]) -> Optional[str]:
 @click.option("--warmup", default=20, type=int, help="Number of warmup iterations")
 @click.option("--device", default=None, type=str, help="Torch device, e.g. cuda:0 or cpu")
 @click.option(
+    "--amp",
+    type=click.Choice(["none", "fp16", "bf16"]),
+    default="none",
+    show_default=True,
+    help="Mixed precision mode for inference",
+)
+@click.option(
+    "--compile",
+    "compile_policy",
+    is_flag=True,
+    default=False,
+    help="Compile the encoder and diffusion model with torch.compile",
+)
+@click.option(
     "--num-inference-steps",
     type=int,
     default=None,
     help="Override diffusion/DDIM inference steps from the checkpoint",
 )
-def main(input, data, episode, start_index, num_samples, stride, warmup, device, num_inference_steps):
+def main(input, data, episode, start_index, num_samples, stride, warmup, device, amp, compile_policy, num_inference_steps):
     torch.backends.cudnn.benchmark = True
 
     cfg, _, policy = load_checkpoint(input)
@@ -453,15 +499,19 @@ def main(input, data, episode, start_index, num_samples, stride, warmup, device,
     if device is None:
         device = "cuda:0" if torch.cuda.is_available() else "cpu"
     device = torch.device(device)
+    amp_dtype = resolve_amp_dtype(amp)
 
     if num_inference_steps is not None and hasattr(policy, "num_inference_steps"):
         policy.num_inference_steps = num_inference_steps
 
     policy.eval().to(device)
+    policy = apply_inference_optimizations(policy, device, compile_policy)
 
     print(f"Checkpoint: {os.path.expanduser(input)}")
     print(f"Dataset: {dataset_path}")
     print(f"Device: {device}")
+    print(f"amp: {amp}")
+    print(f"compile: {compile_policy}")
     print(f"Samples selected: {len(sample_indices)} / {len(dataset)}")
     if total_episodes >= 0:
         print(f"Episodes available: {total_episodes}")
@@ -491,6 +541,7 @@ def main(input, data, episode, start_index, num_samples, stride, warmup, device,
         samples_device=samples_device,
         device=device,
         warmup=warmup,
+        amp_dtype=amp_dtype,
     )
 
     print("")

@@ -21,6 +21,7 @@ Press "S" to stop evaluation and gain control back.
 """
 
 # %%
+import contextlib
 import os
 import pathlib
 import time
@@ -60,6 +61,33 @@ from umi.real_world.spacemouse_shared_memory import Spacemouse
 from umi.common.pose_util import pose_to_mat, mat_to_pose
 
 OmegaConf.register_new_resolver("eval", eval, replace=True)
+
+
+def resolve_amp_dtype(amp):
+    if amp == 'none':
+        return None
+    if amp == 'fp16':
+        return torch.float16
+    if amp == 'bf16':
+        return torch.bfloat16
+    raise ValueError(f'Unsupported amp mode: {amp}')
+
+
+def get_autocast_context(device, amp_dtype):
+    if amp_dtype is None or device.type != 'cuda':
+        return contextlib.nullcontext()
+    return torch.autocast(device_type='cuda', dtype=amp_dtype)
+
+
+def apply_inference_optimizations(policy, device, compile_policy):
+    if compile_policy:
+        if not hasattr(torch, 'compile'):
+            raise RuntimeError('torch.compile is not available in this PyTorch build.')
+        if device.type != 'cuda':
+            print('Warning: --compile is mainly useful on CUDA; continuing anyway.')
+        policy.obs_encoder = torch.compile(policy.obs_encoder, mode='reduce-overhead')
+        policy.model = torch.compile(policy.model, mode='reduce-overhead')
+    return policy
 
 def solve_table_collision(ee_pose, gripper_width, height_threshold):
     finger_thickness = 25.5 / 1000
@@ -119,6 +147,10 @@ def solve_sphere_collision(ee_poses, robots_config):
 @click.option('--max_duration', '-md', default=2000000, help='Max duration for each epoch in seconds.')
 @click.option('--frequency', '-f', default=10, type=float, help="Control frequency in Hz.")
 @click.option('--command_latency', '-cl', default=0.01, type=float, help="Latency between receiving SapceMouse command to executing on Robot in Sec.")
+@click.option('--num_inference_steps', default=None, type=int, help='Override DDIM inference iterations.')
+@click.option('--amp', type=click.Choice(['none', 'fp16', 'bf16']), default='none', show_default=True, help='Mixed precision mode for inference.')
+@click.option('--compile', 'compile_policy', is_flag=True, default=False, help='Compile the encoder and diffusion model with torch.compile.')
+@click.option('--strict_receding_horizon', is_flag=True, default=False, help='Execute only the earliest fresh action and replan every control tick.')
 @click.option('-nm', '--no_mirror', is_flag=True, default=False)
 @click.option('-sf', '--sim_fov', type=float, default=None)
 @click.option('-ci', '--camera_intrinsics', type=str, default=None)
@@ -128,7 +160,8 @@ def main(input, output, robot_config,
     camera_reorder,
     vis_camera_idx, init_joints, 
     steps_per_inference, max_duration,
-    frequency, command_latency, 
+    frequency, command_latency,
+    num_inference_steps, amp, compile_policy, strict_receding_horizon,
     no_mirror, sim_fov, camera_intrinsics, mirror_swap):
     max_gripper_width = 0.09
     gripper_speed = 0.2
@@ -232,7 +265,9 @@ def main(input, output, robot_config,
             policy = workspace.model
             if cfg.training.use_ema:
                 policy = workspace.ema_model
-            policy.num_inference_steps = 16 # DDIM inference iterations
+            if num_inference_steps is None:
+                num_inference_steps = policy.num_inference_steps
+            policy.num_inference_steps = num_inference_steps
             obs_pose_rep = cfg.task.pose_repr.obs_pose_repr
             action_pose_repr = cfg.task.pose_repr.action_pose_repr
             print('obs_pose_rep', obs_pose_rep)
@@ -240,7 +275,15 @@ def main(input, output, robot_config,
 
 
             device = torch.device('cuda')
+            amp_dtype = resolve_amp_dtype(amp)
+            replan_stride = 1 if strict_receding_horizon else steps_per_inference
             policy.eval().to(device)
+            policy = apply_inference_optimizations(policy, device, compile_policy)
+            print('num_inference_steps', policy.num_inference_steps)
+            print('amp', amp)
+            print('compile_policy', compile_policy)
+            print('strict_receding_horizon', strict_receding_horizon)
+            print('replan_stride', replan_stride)
 
             print("Warming up policy inference")
             obs = env.get_obs()
@@ -251,7 +294,7 @@ def main(input, output, robot_config,
                     obs[f'robot{robot_id}_eef_rot_axis_angle']
                 ], axis=-1)[-1]
                 episode_start_pose.append(pose)
-            with torch.no_grad():
+            with torch.inference_mode():
                 policy.reset()
                 obs_dict_np = get_real_umi_obs_dict(
                     env_obs=obs, shape_meta=cfg.task.shape_meta, 
@@ -260,7 +303,8 @@ def main(input, output, robot_config,
                     episode_start_pose=episode_start_pose)
                 obs_dict = dict_apply(obs_dict_np, 
                     lambda x: torch.from_numpy(x).unsqueeze(0).to(device))
-                result = policy.predict_action(obs_dict)
+                with get_autocast_context(device, amp_dtype):
+                    result = policy.predict_action(obs_dict)
                 action = result['action_pred'][0].detach().to('cpu').numpy()
                 assert action.shape[-1] == 10 * len(robots_config)
                 action = get_real_umi_action(action, obs, action_pose_repr)
@@ -459,7 +503,7 @@ def main(input, output, robot_config,
                     perv_target_pose = None
                     while True:
                         # calculate timing
-                        t_cycle_end = t_start + (iter_idx + steps_per_inference) * dt
+                        t_cycle_end = t_start + (iter_idx + replan_stride) * dt
 
                         # get obs
                         obs = env.get_obs()
@@ -467,7 +511,7 @@ def main(input, output, robot_config,
                         print(f'Obs latency {time.time() - obs_timestamps[-1]}')
 
                         # run inference
-                        with torch.no_grad():
+                        with torch.inference_mode():
                             s = time.time()
                             obs_dict_np = get_real_umi_obs_dict(
                                 env_obs=obs, shape_meta=cfg.task.shape_meta, 
@@ -476,7 +520,8 @@ def main(input, output, robot_config,
                                 episode_start_pose=episode_start_pose)
                             obs_dict = dict_apply(obs_dict_np, 
                                 lambda x: torch.from_numpy(x).unsqueeze(0).to(device))
-                            result = policy.predict_action(obs_dict)
+                            with get_autocast_context(device, amp_dtype):
+                                result = policy.predict_action(obs_dict)
                             raw_action = result['action_pred'][0].detach().to('cpu').numpy()
                             action = get_real_umi_action(raw_action, obs, action_pose_repr)
                             print('Inference latency:', time.time() - s)
@@ -517,6 +562,10 @@ def main(input, output, robot_config,
                         else:
                             this_target_poses = this_target_poses[is_new]
                             action_timestamps = action_timestamps[is_new]
+
+                        if strict_receding_horizon and len(this_target_poses) > 0:
+                            this_target_poses = this_target_poses[:1]
+                            action_timestamps = action_timestamps[:1]
 
                         # execute actions
                         env.exec_actions(
@@ -565,7 +614,7 @@ def main(input, output, robot_config,
 
                         # wait for execution
                         precise_wait(t_cycle_end - frame_latency)
-                        iter_idx += steps_per_inference
+                        iter_idx += replan_stride
 
                 except KeyboardInterrupt:
                     print("Interrupted!")
