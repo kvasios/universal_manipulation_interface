@@ -39,12 +39,13 @@ def runner(cmd, cwd, stdout_path, stderr_path, timeout, **kwargs):
 @click.command()
 @click.option('-i', '--input_dir', required=True, help='Directory for demos folder')
 @click.option('-m', '--map_path', default=None, help='ORB_SLAM3 *.osa map atlas file')
+@click.option('-s', '--slam_settings', default=None, help='Host path to ORB_SLAM3 settings YAML. If omitted, use the default settings inside the docker image.')
 @click.option('-d', '--docker_image', default="chicheng/orb_slam3:latest")
 @click.option('-n', '--num_workers', type=int, default=None)
 @click.option('-ml', '--max_lost_frames', type=int, default=60)
 @click.option('-tm', '--timeout_multiple', type=float, default=16, help='timeout_multiple * duration = timeout')
 @click.option('-np', '--no_docker_pull', is_flag=True, default=False, help="pull docker image from docker hub")
-def main(input_dir, map_path, docker_image, num_workers, max_lost_frames, timeout_multiple, no_docker_pull):
+def main(input_dir, map_path, slam_settings, docker_image, num_workers, max_lost_frames, timeout_multiple, no_docker_pull):
     input_dir = pathlib.Path(os.path.expanduser(input_dir)).absolute()
     input_video_dirs = [x.parent for x in input_dir.glob('demo*/raw_video.mp4')]
     input_video_dirs += [x.parent for x in input_dir.glob('map*/raw_video.mp4')]
@@ -55,6 +56,12 @@ def main(input_dir, map_path, docker_image, num_workers, max_lost_frames, timeou
     else:
         map_path = pathlib.Path(os.path.expanduser(map_path)).absolute()
     assert map_path.is_file()
+    slam_settings_target = '/ORB_SLAM3/Examples/Monocular-Inertial/gopro10_maxlens_fisheye_setting_v1_720.yaml'
+    slam_settings_source = None
+    if slam_settings is not None:
+        slam_settings_source = pathlib.Path(os.path.expanduser(slam_settings)).absolute()
+        assert slam_settings_source.is_file()
+        slam_settings_target = str(pathlib.Path('/settings').joinpath(slam_settings_source.name))
 
     if num_workers is None:
         num_workers = multiprocessing.cpu_count() // 2
@@ -103,18 +110,25 @@ def main(input_dir, map_path, docker_image, num_workers, max_lost_frames, timeou
 
                 map_mount_source = map_path
                 map_mount_target = pathlib.Path('/map').joinpath(map_mount_source.name)
+                volume_args = [
+                    '--volume', str(video_dir) + ':' + '/data',
+                    '--volume', str(map_mount_source.parent) + ':' + str(map_mount_target.parent),
+                ]
+                if slam_settings_source is not None:
+                    volume_args.extend([
+                        '--volume', str(slam_settings_source.parent) + ':' + '/settings'
+                    ])
 
                 # run SLAM
                 cmd = [
                     'docker',
                     'run',
                     '--rm', # delete after finish
-                    '--volume', str(video_dir) + ':' + '/data',
-                    '--volume', str(map_mount_source.parent) + ':' + str(map_mount_target.parent),
+                    *volume_args,
                     docker_image,
                     '/ORB_SLAM3/Examples/Monocular-Inertial/gopro_slam',
                     '--vocabulary', '/ORB_SLAM3/Vocabulary/ORBvoc.txt',
-                    '--setting', '/ORB_SLAM3/Examples/Monocular-Inertial/gopro10_maxlens_fisheye_setting_v1_720.yaml',
+                    '--setting', slam_settings_target,
                     '--input_video', str(video_path),
                     '--input_imu_json', str(json_path),
                     '--output_trajectory_csv', str(csv_path),

@@ -1,5 +1,6 @@
 .vscode
 example_demo_session
+test_training_data
 data
 data_local
 data_workspace
@@ -7,6 +8,9 @@ outputs
 wandb
 **/.DS_Store
 *.lprof
+
+*.mp4
+*.MP4
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

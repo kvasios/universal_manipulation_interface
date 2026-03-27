@@ -1,6 +1,6 @@
 [submodule "ORB_SLAM3"]
 	path = ORB_SLAM3
-	url = https://github.com/urbste/ORB_SLAM3.git
+	url = https://github.com/cheng-chi/ORB_SLAM3.git
 [submodule "OpenImuCameraCalibrator"]
 	path = OpenImuCameraCalibrator
 	url = https://github.com/urbste/OpenImuCameraCalibrator.git

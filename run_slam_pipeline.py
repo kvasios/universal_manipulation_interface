@@ -19,13 +19,17 @@ import subprocess
 @click.command()
 @click.argument('session_dir', nargs=-1)
 @click.option('-c', '--calibration_dir', type=str, default=None)
-def main(session_dir, calibration_dir):
+@click.option('-s', '--slam_settings', type=str, default=None, help='Host path to ORB_SLAM3 settings YAML for map creation and batch SLAM.')
+def main(session_dir, calibration_dir, slam_settings):
     script_dir = pathlib.Path(__file__).parent.joinpath('scripts_slam_pipeline')
     if calibration_dir is None:
         calibration_dir = pathlib.Path(__file__).parent.joinpath('example', 'calibration')
     else:
         calibration_dir = pathlib.Path(calibration_dir)
     assert calibration_dir.is_dir()
+    if slam_settings is not None:
+        slam_settings = pathlib.Path(os.path.expanduser(slam_settings)).absolute()
+        assert slam_settings.is_file()
 
     for session in session_dir:
         session = pathlib.Path(os.path.expanduser(session)).absolute()
@@ -63,6 +67,8 @@ def main(session_dir, calibration_dir):
                 '--input_dir', str(mapping_dir),
                 '--map_path', str(map_path)
             ]
+            if slam_settings is not None:
+                cmd.extend(['--slam_settings', str(slam_settings)])
             result = subprocess.run(cmd)
             assert result.returncode == 0
             assert map_path.is_file()
@@ -75,6 +81,8 @@ def main(session_dir, calibration_dir):
             '--input_dir', str(demo_dir),
             '--map_path', str(map_path)
         ]
+        if slam_settings is not None:
+            cmd.extend(['--slam_settings', str(slam_settings)])
         result = subprocess.run(cmd)
         assert result.returncode == 0
 
