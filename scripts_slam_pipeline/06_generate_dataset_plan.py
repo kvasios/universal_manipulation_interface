@@ -675,6 +675,13 @@ def main(input, output, tcp_offset, tx_slam_tag,
                 if width is not None:
                     gripper_timestamps.append(td['time'])
                     gripper_widths.append(gripper_cal_interp(width))
+            if len(gripper_timestamps) == 0:
+                print(
+                    f"Skipping {video_dir.name}, no gripper tag width samples "
+                    f"in aligned frames (check tag_detection / ArUco IDs {left_id},{right_id})."
+                )
+                dropped_camera_count[row['camera_serial']] += 1
+                continue
             gripper_interp = get_interp1d(gripper_timestamps, gripper_widths)
             
             gripper_det_ratio = (len(gripper_widths) / len(tag_detection_results))

@@ -44,17 +44,80 @@ $ conda activate umi
 (umi)$ 
 ```
 
+## Camera Calibration
+
+The SLAM pipeline requires two types of camera-specific configuration:
+
+| File | Used by | Purpose |
+|---|---|---|
+| `gopro_intrinsics_2_7k.json` | Step 04 (ArUco detection) | Camera intrinsics (focal length, distortion) for tag pose estimation |
+| `aruco_config.yaml` | Step 04 (ArUco detection) | ArUco marker dictionary and physical marker sizes |
+| ORB_SLAM3 settings YAML | Steps 02 & 03 (SLAM) | Camera model, IMU params, and ORB feature settings for visual-inertial SLAM |
+
+These files are **camera-specific**. Using the wrong intrinsics will silently corrupt ArUco pose estimates (wrong z-depth), which breaks gripper width calibration and downstream training data.
+
+### Included calibration data
+
+| Directory | Camera | Resolution | Notes |
+|---|---|---|---|
+| `example/calibration/` | GoPro Hero 10 (MaxLens) | 2704 x 2028 | Ships with the upstream example data. **Do not modify.** |
+| `gopro_cal_data/pipeline_calib/` | GoPro Hero 9 (custom) | 1352 x 1014 | Custom calibration for non-default camera setups |
+
+The ORB_SLAM3 docker image also contains a **baked-in default** settings YAML for the GoPro 10 (`gopro10_maxlens_fisheye_setting_v1_720.yaml`). For other cameras, you must generate a custom YAML and pass it via `--slam_settings`.
+
+### Using your own camera
+
+If you are using a camera other than the original GoPro Hero 10 with MaxLens Mod, you need to:
+
+1. **Calibrate your camera** using [OpenImuCameraCalibrator](https://github.com/urbste/OpenImuCameraCalibrator/) (see `Calibration_Tutorial.pdf` and `scripts/gen_orbslam3_yaml_from_openicc.py`).
+2. **Create a calibration directory** containing `gopro_intrinsics_2_7k.json` and `aruco_config.yaml`.
+3. **Generate an ORB_SLAM3 settings YAML** with your camera's intrinsics, IMU extrinsics, and noise parameters.
+4. **Pass both** to the pipeline:
+
+```console
+(umi)$ python run_slam_pipeline.py my_session \
+    -c path/to/my_calibration_dir \
+    -s path/to/my_slam_settings.yaml
+```
+
+The pipeline prints which configuration files it is using at startup so you can always verify:
+
+```
+============================================================
+Pipeline configuration
+  Calibration dir : /absolute/path/to/my_calibration_dir
+  Camera intrinsics: .../gopro_intrinsics_2_7k.json
+  ArUco config     : .../aruco_config.yaml
+  SLAM settings    : /absolute/path/to/my_slam_settings.yaml
+============================================================
+```
+
 ## Running UMI SLAM pipeline
-Download example data
+
+### Example data (GoPro 10)
+
+Download example data:
 ```console
 (umi)$ wget --recursive --no-parent --no-host-directories --cut-dirs=2 --relative --reject="index.html*" https://real.stanford.edu/umi/data/example_demo_session/
 ```
 
-Run SLAM pipeline
+Run SLAM pipeline (uses the default `example/calibration/` intrinsics):
 ```console
 (umi)$ python run_slam_pipeline.py example_demo_session
+```
 
-...
+### Custom camera data
+
+Run with explicit calibration directory and SLAM settings:
+```console
+(umi)$ python run_slam_pipeline.py my_session \
+    -c gopro_cal_data/pipeline_calib \
+    -s gopro_cal_data/gopro9_custom_1352x1014.yaml
+```
+
+### Expected output
+
+```
 Found following cameras:
 camera_serial
 C3441328164125    5
@@ -66,12 +129,13 @@ camera_idx
 99% of raw data are used.
 defaultdict(<function main.<locals>.<lambda> at 0x7f471feb2310>, {})
 n_dropped_demos 0
-````
+```
+
 For this dataset, 99% of the data are useable (successful SLAM), with 0 demonstrations dropped. If your dataset has a low SLAM success rate, double check if you carefully followed our [data collection instruction](https://swanky-sphere-ad1.notion.site/UMI-Data-Collection-Instruction-4db1a1f0f2aa4a2e84d9742720428b4c). 
 
 Despite our significant effort on robustness improvement, OBR_SLAM3 is still the most fragile part of UMI pipeline. If you are an expert in SLAM, please consider contributing to our fork of [OBR_SLAM3](https://github.com/cheng-chi/ORB_SLAM3) which is specifically optimized for UMI workflow.
 
-Generate dataset for training.
+Generate dataset for training:
 ```console
 (umi)$ python scripts_slam_pipeline/07_generate_replay_buffer.py -o example_demo_session/dataset.zarr.zip example_demo_session
 ```

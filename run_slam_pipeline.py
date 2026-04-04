@@ -1,6 +1,18 @@
 """
 Main script for UMI SLAM pipeline.
-python run_slam_pipeline.py <session_dir>
+
+Usage:
+  # Run with upstream example data (GoPro 10, default calibration):
+  python run_slam_pipeline.py example_demo_session
+
+  # Run with custom camera calibration and SLAM settings:
+  python run_slam_pipeline.py my_session \\
+      -c my_calibration/pipeline_calib \\
+      -s my_calibration/my_camera_settings.yaml
+
+Calibration directory must contain:
+  - gopro_intrinsics_2_7k.json  (camera intrinsics for ArUco detection)
+  - aruco_config.yaml           (ArUco marker dictionary and size map)
 """
 
 import sys
@@ -15,21 +27,43 @@ import pathlib
 import click
 import subprocess
 
+DEFAULT_CALIBRATION_DIR = pathlib.Path(__file__).parent.joinpath('example', 'calibration')
+
 # %%
 @click.command()
 @click.argument('session_dir', nargs=-1)
-@click.option('-c', '--calibration_dir', type=str, default=None)
-@click.option('-s', '--slam_settings', type=str, default=None, help='Host path to ORB_SLAM3 settings YAML for map creation and batch SLAM.')
+@click.option('-c', '--calibration_dir', type=str, default=None,
+    help='Directory with gopro_intrinsics_2_7k.json and aruco_config.yaml. '
+         f'Defaults to example/calibration (GoPro 10, 2704x2028).')
+@click.option('-s', '--slam_settings', type=str, default=None,
+    help='Host path to ORB_SLAM3 settings YAML for map creation and batch SLAM. '
+         'If omitted, uses the GoPro 10 defaults baked into the docker image.')
 def main(session_dir, calibration_dir, slam_settings):
     script_dir = pathlib.Path(__file__).parent.joinpath('scripts_slam_pipeline')
     if calibration_dir is None:
-        calibration_dir = pathlib.Path(__file__).parent.joinpath('example', 'calibration')
+        calibration_dir = DEFAULT_CALIBRATION_DIR
     else:
-        calibration_dir = pathlib.Path(calibration_dir)
-    assert calibration_dir.is_dir()
+        calibration_dir = pathlib.Path(os.path.expanduser(calibration_dir)).absolute()
+    assert calibration_dir.is_dir(), f"Calibration dir not found: {calibration_dir}"
+
+    camera_intrinsics = calibration_dir.joinpath('gopro_intrinsics_2_7k.json')
+    aruco_config = calibration_dir.joinpath('aruco_config.yaml')
+    assert camera_intrinsics.is_file(), \
+        f"Missing camera intrinsics: {camera_intrinsics}"
+    assert aruco_config.is_file(), \
+        f"Missing ArUco config: {aruco_config}"
+
     if slam_settings is not None:
         slam_settings = pathlib.Path(os.path.expanduser(slam_settings)).absolute()
-        assert slam_settings.is_file()
+        assert slam_settings.is_file(), f"SLAM settings not found: {slam_settings}"
+
+    print("=" * 60)
+    print("Pipeline configuration")
+    print(f"  Calibration dir : {calibration_dir}")
+    print(f"  Camera intrinsics: {camera_intrinsics}")
+    print(f"  ArUco config     : {aruco_config}")
+    print(f"  SLAM settings    : {slam_settings or '(docker default: GoPro 10)'}")
+    print("=" * 60)
 
     for session in session_dir:
         session = pathlib.Path(os.path.expanduser(session)).absolute()
@@ -89,11 +123,6 @@ def main(session_dir, calibration_dir, slam_settings):
         print("############# 04_detect_aruco ###########")
         script_path = script_dir.joinpath("04_detect_aruco.py")
         assert script_path.is_file()
-        camera_intrinsics = calibration_dir.joinpath('gopro_intrinsics_2_7k.json')
-        aruco_config = calibration_dir.joinpath('aruco_config.yaml')
-        assert camera_intrinsics.is_file()
-        assert aruco_config.is_file()
-
         cmd = [
             'python', str(script_path),
             '--input_dir', str(demo_dir),

@@ -56,12 +56,16 @@ def main(input_dir, map_path, slam_settings, docker_image, num_workers, max_lost
     else:
         map_path = pathlib.Path(os.path.expanduser(map_path)).absolute()
     assert map_path.is_file()
-    slam_settings_target = '/ORB_SLAM3/Examples/Monocular-Inertial/gopro10_maxlens_fisheye_setting_v1_720.yaml'
+    docker_default_settings = '/ORB_SLAM3/Examples/Monocular-Inertial/gopro10_maxlens_fisheye_setting_v1_720.yaml'
+    slam_settings_target = docker_default_settings
     slam_settings_source = None
     if slam_settings is not None:
         slam_settings_source = pathlib.Path(os.path.expanduser(slam_settings)).absolute()
-        assert slam_settings_source.is_file()
+        assert slam_settings_source.is_file(), f"SLAM settings not found: {slam_settings_source}"
         slam_settings_target = str(pathlib.Path('/settings').joinpath(slam_settings_source.name))
+        print(f"Using custom SLAM settings: {slam_settings_source}")
+    else:
+        print(f"Using docker-default SLAM settings (GoPro 10): {docker_default_settings}")
 
     if num_workers is None:
         num_workers = multiprocessing.cpu_count() // 2

@@ -67,18 +67,22 @@ def main(input_dir, map_path, slam_settings, docker_image, no_docker_pull, no_ma
 
     map_mount_source = pathlib.Path(map_path)
     map_mount_target = pathlib.Path('/map').joinpath(map_mount_source.name)
-    slam_settings_target = '/ORB_SLAM3/Examples/Monocular-Inertial/gopro10_maxlens_fisheye_setting_v1_720.yaml'
+    docker_default_settings = '/ORB_SLAM3/Examples/Monocular-Inertial/gopro10_maxlens_fisheye_setting_v1_720.yaml'
+    slam_settings_target = docker_default_settings
     volume_args = [
         '--volume', str(video_dir) + ':' + '/data',
         '--volume', str(map_mount_source.parent) + ':' + str(map_mount_target.parent),
     ]
     if slam_settings is not None:
         slam_settings_source = pathlib.Path(os.path.expanduser(slam_settings)).absolute()
-        assert slam_settings_source.is_file()
+        assert slam_settings_source.is_file(), f"SLAM settings not found: {slam_settings_source}"
         slam_settings_target = str(pathlib.Path('/settings').joinpath(slam_settings_source.name))
         volume_args.extend([
             '--volume', str(slam_settings_source.parent) + ':' + '/settings'
         ])
+        print(f"Using custom SLAM settings: {slam_settings_source}")
+    else:
+        print(f"Using docker-default SLAM settings (GoPro 10): {docker_default_settings}")
 
     # run SLAM
     cmd = [
