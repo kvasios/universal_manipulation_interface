@@ -5,10 +5,11 @@ Usage:
   # Run with upstream example data (GoPro 10, default calibration):
   python run_slam_pipeline.py example_demo_session
 
-  # Run with custom camera calibration and SLAM settings:
+  # Run with custom camera calibration, SLAM settings, and mask:
   python run_slam_pipeline.py my_session \\
       -c my_calibration/pipeline_calib \\
-      -s my_calibration/my_camera_settings.yaml
+      -s my_calibration/my_camera_settings.yaml \\
+      -m my_calibration/mask.json
 
 Calibration directory must contain:
   - gopro_intrinsics_2_7k.json  (camera intrinsics for ArUco detection)
@@ -26,8 +27,10 @@ os.chdir(ROOT_DIR)
 import pathlib
 import click
 import subprocess
+from umi.common.cv_util import get_default_mask_json_path
 
 DEFAULT_CALIBRATION_DIR = pathlib.Path(__file__).parent.joinpath('example', 'calibration')
+DEFAULT_MASK_JSON = get_default_mask_json_path()
 
 # %%
 @click.command()
@@ -38,7 +41,10 @@ DEFAULT_CALIBRATION_DIR = pathlib.Path(__file__).parent.joinpath('example', 'cal
 @click.option('-s', '--slam_settings', type=str, default=None,
     help='Host path to ORB_SLAM3 settings YAML for map creation and batch SLAM. '
          'If omitted, uses the GoPro 10 defaults baked into the docker image.')
-def main(session_dir, calibration_dir, slam_settings):
+@click.option('-m', '--mask_json', type=str, default=None,
+    help='Mask JSON with polygon definitions for SLAM and ArUco masking. '
+         'If omitted, uses umi/asset/mask.json.')
+def main(session_dir, calibration_dir, slam_settings, mask_json):
     script_dir = pathlib.Path(__file__).parent.joinpath('scripts_slam_pipeline')
     if calibration_dir is None:
         calibration_dir = DEFAULT_CALIBRATION_DIR
@@ -57,12 +63,19 @@ def main(session_dir, calibration_dir, slam_settings):
         slam_settings = pathlib.Path(os.path.expanduser(slam_settings)).absolute()
         assert slam_settings.is_file(), f"SLAM settings not found: {slam_settings}"
 
+    if mask_json is None:
+        mask_json = DEFAULT_MASK_JSON
+    else:
+        mask_json = pathlib.Path(os.path.expanduser(mask_json)).absolute()
+    assert mask_json.is_file(), f"Mask JSON not found: {mask_json}"
+
     print("=" * 60)
     print("Pipeline configuration")
-    print(f"  Calibration dir : {calibration_dir}")
+    print(f"  Calibration dir  : {calibration_dir}")
     print(f"  Camera intrinsics: {camera_intrinsics}")
     print(f"  ArUco config     : {aruco_config}")
     print(f"  SLAM settings    : {slam_settings or '(docker default: GoPro 10)'}")
+    print(f"  Mask JSON        : {mask_json}")
     print("=" * 60)
 
     for session in session_dir:
@@ -103,6 +116,7 @@ def main(session_dir, calibration_dir, slam_settings):
             ]
             if slam_settings is not None:
                 cmd.extend(['--slam_settings', str(slam_settings)])
+            cmd.extend(['--mask_json', str(mask_json)])
             result = subprocess.run(cmd)
             assert result.returncode == 0
             assert map_path.is_file()
@@ -117,6 +131,7 @@ def main(session_dir, calibration_dir, slam_settings):
         ]
         if slam_settings is not None:
             cmd.extend(['--slam_settings', str(slam_settings)])
+        cmd.extend(['--mask_json', str(mask_json)])
         result = subprocess.run(cmd)
         assert result.returncode == 0
 
@@ -129,6 +144,7 @@ def main(session_dir, calibration_dir, slam_settings):
             '--camera_intrinsics', str(camera_intrinsics),
             '--aruco_yaml', str(aruco_config)
         ]
+        cmd.extend(['--mask_json', str(mask_json)])
         result = subprocess.run(cmd)
         assert result.returncode == 0
 

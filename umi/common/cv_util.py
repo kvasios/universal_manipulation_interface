@@ -245,6 +245,69 @@ def get_gripper_width(tag_dict, left_id, right_id, nominal_z=0.072, z_tolerance=
 
 
 # =========== image mask ====================
+
+DEFAULT_MASK_JSON_PATH = pathlib.Path(__file__).resolve().parent.parent.joinpath(
+    'asset', 'mask.json'
+)
+_DEFAULT_MASK_CONFIG = None
+
+
+def get_default_mask_json_path():
+    return DEFAULT_MASK_JSON_PATH
+
+
+def get_default_mask_config():
+    global _DEFAULT_MASK_CONFIG
+    if _DEFAULT_MASK_CONFIG is None:
+        if DEFAULT_MASK_JSON_PATH.is_file():
+            _DEFAULT_MASK_CONFIG = load_mask_json(DEFAULT_MASK_JSON_PATH)
+        else:
+            # Fall back to hardcoded defaults if the asset file is missing.
+            _DEFAULT_MASK_CONFIG = dict()
+    return _DEFAULT_MASK_CONFIG
+
+def load_mask_json(json_path):
+    """
+    Load a mask.json and return a dict of canonical polygon arrays keyed by
+    mask type ('mirror', 'gripper', 'finger').
+
+    JSON format:
+    {
+        "mirror_mask_pts": [[x,y], ...],   // left-side only, auto-mirrored
+        "gripper_mask_pts": [[x,y], ...],  // left-side only, auto-mirrored
+        "finger_mask_pts": [[x,y], ...],   // full polygon, NOT mirrored
+        "resolution": [height, width]
+    }
+
+    mirror and gripper points define the LEFT-side polygon; the right side
+    is created automatically by mirroring x-coordinates.  finger points
+    define the full polygon (typically a trapezoid spanning the image width).
+    """
+    import json as _json
+    data = _json.load(open(json_path, 'r'))
+    resolution = data['resolution']
+    config = {}
+
+    for key, config_key in [
+        ('mirror_mask_pts', 'mirror'),
+        ('gripper_mask_pts', 'gripper'),
+    ]:
+        if key not in data:
+            continue
+        left_pts = data[key]
+        left_coords = pixel_coords_to_canonical(left_pts, resolution)
+        right_coords = left_coords.copy()
+        right_coords[:, 0] *= -1
+        config[config_key] = np.stack([left_coords, right_coords])
+
+    if 'finger_mask_pts' in data:
+        pts = data['finger_mask_pts']
+        coords = pixel_coords_to_canonical(pts, resolution)
+        config['finger'] = np.stack([coords])
+
+    return config
+
+
 def canonical_to_pixel_coords(coords, img_shape=(2028, 2704)):
     pts = np.asarray(coords) * img_shape[0] + np.array(img_shape[::-1]) * 0.5
     return pts
@@ -342,14 +405,34 @@ def get_finger_canonical_polygon(height=0.37, top_width=0.25, bottom_width=1.4):
     coords = pixel_coords_to_canonical(points, img_shape=resolution)
     return coords
 
-def draw_predefined_mask(img, color=(0,0,0), mirror=True, gripper=True, finger=True, use_aa=False):
+def draw_predefined_mask(img, color=(0,0,0), mirror=True, gripper=True, finger=True,
+                         use_aa=False, mask_config=None):
+    """
+    Draw mask polygons onto *img*.
+
+    If *mask_config* (output of ``load_mask_json``) is provided, its polygons
+    are used for the requested region types. Otherwise the default
+    ``umi/asset/mask.json`` is loaded. Missing sections in the JSON fall back
+    to the hardcoded GoPro 10 defaults.
+    """
+    if mask_config is None:
+        mask_config = get_default_mask_config()
     all_coords = list()
     if mirror:
-        all_coords.extend(get_mirror_canonical_polygon())
+        if mask_config and 'mirror' in mask_config:
+            all_coords.extend(mask_config['mirror'])
+        else:
+            all_coords.extend(get_mirror_canonical_polygon())
     if gripper:
-        all_coords.extend(get_gripper_canonical_polygon())
+        if mask_config and 'gripper' in mask_config:
+            all_coords.extend(mask_config['gripper'])
+        else:
+            all_coords.extend(get_gripper_canonical_polygon())
     if finger:
-        all_coords.extend(get_finger_canonical_polygon())
+        if mask_config and 'finger' in mask_config:
+            all_coords.extend(mask_config['finger'])
+        else:
+            all_coords.extend(get_finger_canonical_polygon())
         
     for coords in all_coords:
         pts = canonical_to_pixel_coords(coords, img.shape[:2])

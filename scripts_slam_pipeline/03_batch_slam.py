@@ -19,7 +19,7 @@ from tqdm import tqdm
 import cv2
 import av
 import numpy as np
-from umi.common.cv_util import draw_predefined_mask
+from umi.common.cv_util import draw_predefined_mask, load_mask_json
 
 
 # %%
@@ -40,12 +40,13 @@ def runner(cmd, cwd, stdout_path, stderr_path, timeout, **kwargs):
 @click.option('-i', '--input_dir', required=True, help='Directory for demos folder')
 @click.option('-m', '--map_path', default=None, help='ORB_SLAM3 *.osa map atlas file')
 @click.option('-s', '--slam_settings', default=None, help='Host path to ORB_SLAM3 settings YAML. If omitted, use the default settings inside the docker image.')
+@click.option('-mj', '--mask_json', default=None, help='Mask JSON for SLAM mask polygons. Defaults to umi/asset/mask.json.')
 @click.option('-d', '--docker_image', default="chicheng/orb_slam3:latest")
 @click.option('-n', '--num_workers', type=int, default=None)
 @click.option('-ml', '--max_lost_frames', type=int, default=60)
 @click.option('-tm', '--timeout_multiple', type=float, default=16, help='timeout_multiple * duration = timeout')
 @click.option('-np', '--no_docker_pull', is_flag=True, default=False, help="pull docker image from docker hub")
-def main(input_dir, map_path, slam_settings, docker_image, num_workers, max_lost_frames, timeout_multiple, no_docker_pull):
+def main(input_dir, map_path, slam_settings, mask_json, docker_image, num_workers, max_lost_frames, timeout_multiple, no_docker_pull):
     input_dir = pathlib.Path(os.path.expanduser(input_dir)).absolute()
     input_video_dirs = [x.parent for x in input_dir.glob('demo*/raw_video.mp4')]
     input_video_dirs += [x.parent for x in input_dir.glob('map*/raw_video.mp4')]
@@ -66,6 +67,8 @@ def main(input_dir, map_path, slam_settings, docker_image, num_workers, max_lost
         print(f"Using custom SLAM settings: {slam_settings_source}")
     else:
         print(f"Using docker-default SLAM settings (GoPro 10): {docker_default_settings}")
+
+    mask_config = load_mask_json(mask_json) if mask_json else None
 
     if num_workers is None:
         num_workers = multiprocessing.cpu_count() // 2
@@ -101,15 +104,17 @@ def main(input_dir, map_path, slam_settings, docker_image, num_workers, max_lost
                 mask_path = mount_target.joinpath('slam_mask.png')
                 mask_write_path = video_dir.joinpath('slam_mask.png')
                 
-                # find video duration
+                # find video duration and resolution
                 with av.open(str(video_dir.joinpath('raw_video.mp4').absolute())) as container:
                     video = container.streams.video[0]
                     duration_sec = float(video.duration * video.time_base)
+                    vid_h, vid_w = video.height, video.width
                 timeout = duration_sec * timeout_multiple
                 
-                slam_mask = np.zeros((2028, 2704), dtype=np.uint8)
+                slam_mask = np.zeros((vid_h, vid_w), dtype=np.uint8)
                 slam_mask = draw_predefined_mask(
-                    slam_mask, color=255, mirror=True, gripper=False, finger=True)
+                    slam_mask, color=255, mirror=True, gripper=False, finger=True,
+                    mask_config=mask_config)
                 cv2.imwrite(str(mask_write_path.absolute()), slam_mask)
 
                 map_mount_source = map_path

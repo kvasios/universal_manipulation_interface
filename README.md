@@ -46,13 +46,14 @@ $ conda activate umi
 
 ## Camera Calibration
 
-The SLAM pipeline requires two types of camera-specific configuration:
+The SLAM pipeline requires camera-specific configuration files:
 
 | File | Used by | Purpose |
 |---|---|---|
 | `gopro_intrinsics_2_7k.json` | Step 04 (ArUco detection) | Camera intrinsics (focal length, distortion) for tag pose estimation |
 | `aruco_config.yaml` | Step 04 (ArUco detection) | ArUco marker dictionary and physical marker sizes |
 | ORB_SLAM3 settings YAML | Steps 02 & 03 (SLAM) | Camera model, IMU params, and ORB feature settings for visual-inertial SLAM |
+| `mask.json` | Steps 02, 03, 04 | Polygon definitions for masking mirrors, gripper body, and fingers |
 
 These files are **camera-specific**. Using the wrong intrinsics will silently corrupt ArUco pose estimates (wrong z-depth), which breaks gripper width calibration and downstream training data.
 
@@ -72,12 +73,14 @@ If you are using a camera other than the original GoPro Hero 10 with MaxLens Mod
 1. **Calibrate your camera** using [OpenImuCameraCalibrator](https://github.com/urbste/OpenImuCameraCalibrator/) (see `Calibration_Tutorial.pdf` and `scripts/gen_orbslam3_yaml_from_openicc.py`).
 2. **Create a calibration directory** containing `gopro_intrinsics_2_7k.json` and `aruco_config.yaml`.
 3. **Generate an ORB_SLAM3 settings YAML** with your camera's intrinsics, IMU extrinsics, and noise parameters.
-4. **Pass both** to the pipeline:
+4. **Create a custom mask** (see below).
+5. **Pass everything** to the pipeline:
 
 ```console
 (umi)$ python run_slam_pipeline.py my_session \
     -c path/to/my_calibration_dir \
-    -s path/to/my_slam_settings.yaml
+    -s path/to/my_slam_settings.yaml \
+    -m path/to/my_mask.json
 ```
 
 The pipeline prints which configuration files it is using at startup so you can always verify:
@@ -85,12 +88,52 @@ The pipeline prints which configuration files it is using at startup so you can 
 ```
 ============================================================
 Pipeline configuration
-  Calibration dir : /absolute/path/to/my_calibration_dir
+  Calibration dir  : /absolute/path/to/my_calibration_dir
   Camera intrinsics: .../gopro_intrinsics_2_7k.json
   ArUco config     : .../aruco_config.yaml
   SLAM settings    : /absolute/path/to/my_slam_settings.yaml
+  Mask JSON        : /absolute/path/to/my_mask.json
 ============================================================
 ```
+
+### Customizing the image mask
+
+The pipeline masks out regions of the camera image (side mirrors, gripper body, finger area) to avoid confusing SLAM feature tracking and ArUco tag detection. By default it loads `umi/asset/mask.json`, which is tuned for the GoPro 10 + MaxLens setup. If your physical camera/gripper arrangement is different, you should create a custom `mask.json`.
+
+**Step 1: Extract a reference frame** from your data for visual guidance:
+
+```console
+(umi)$ python scripts/extract_mask_frame.py -s my_session
+Saved reference frame to: .../mask_reference_frame.png
+  Resolution: 2704 x 2028  (width x height)
+  "resolution": [2028, 2704]
+
+(umi)$ python scripts/extract_mask_frame.py -s my_session --show_default_mask
+
+(umi)$ python scripts/extract_mask_frame.py -s my_session --draw_masks
+```
+
+`--show_default_mask` writes overlay previews, while `--draw_masks` writes standalone binary mask PNGs (`*_slam_mask.png`, `*_training_mask.png`, `*_aruco_mask.png`) for quick evaluation.
+
+**Step 2: Design your mask polygons.** Open the reference frame in an image viewer. Identify the pixel coordinates of the regions you need to mask. See `umi/asset/mask.json` for the default GoPro 10 template.
+
+The `mask.json` format:
+
+```json
+{
+    "mirror_mask_pts": [[x,y], ...],
+    "gripper_mask_pts": [[x,y], ...],
+    "finger_mask_pts": [[x,y], ...],
+    "resolution": [height, width]
+}
+```
+
+- `mirror_mask_pts` and `gripper_mask_pts` define **left-side** polygons in pixel coordinates. The right side is created automatically by mirroring the x-axis.
+- `finger_mask_pts` defines the **full** polygon (not mirrored), typically a trapezoid covering the bottom of the frame.
+- `resolution` is `[height, width]` matching the coordinate system of the points.
+- All fields except `resolution` are optional; omitted fields fall back to the built-in GoPro 10 defaults.
+
+**Step 3: Pass to the pipeline** with `-m path/to/my_mask.json`. If you omit `-m`, the pipeline uses `umi/asset/mask.json`.
 
 ## Running UMI SLAM pipeline
 
@@ -108,11 +151,12 @@ Run SLAM pipeline (uses the default `example/calibration/` intrinsics):
 
 ### Custom camera data
 
-Run with explicit calibration directory and SLAM settings:
+Run with explicit calibration directory, SLAM settings, and mask:
 ```console
 (umi)$ python run_slam_pipeline.py my_session \
     -c gopro_cal_data/pipeline_calib \
-    -s gopro_cal_data/gopro9_custom_1352x1014.yaml
+    -s gopro_cal_data/gopro9_custom_1352x1014.yaml \
+    -m path/to/my_mask.json
 ```
 
 ### Expected output

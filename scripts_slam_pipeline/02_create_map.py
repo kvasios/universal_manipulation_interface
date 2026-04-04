@@ -19,17 +19,18 @@ import concurrent.futures
 from tqdm import tqdm
 import numpy as np
 import cv2
-from umi.common.cv_util import draw_predefined_mask
+from umi.common.cv_util import draw_predefined_mask, load_mask_json
 
 # %%
 @click.command()
 @click.option('-i', '--input_dir', required=True, help='Directory for mapping video')
 @click.option('-m', '--map_path', default=None, help='ORB_SLAM3 *.osa map atlas file')
 @click.option('-s', '--slam_settings', default=None, help='Host path to ORB_SLAM3 settings YAML. If omitted, use the default settings inside the docker image.')
+@click.option('-mj', '--mask_json', default=None, help='Mask JSON for SLAM mask polygons. Defaults to umi/asset/mask.json.')
 @click.option('-d', '--docker_image', default="chicheng/orb_slam3:latest")
 @click.option('-np', '--no_docker_pull', is_flag=True, default=False, help="pull docker image from docker hub")
 @click.option('-nm', '--no_mask', is_flag=True, default=False, help="Whether to mask out gripper and mirrors. Set if map is created with bare GoPro no on gripper.")
-def main(input_dir, map_path, slam_settings, docker_image, no_docker_pull, no_mask):
+def main(input_dir, map_path, slam_settings, mask_json, docker_image, no_docker_pull, no_mask):
     video_dir = pathlib.Path(os.path.expanduser(input_dir)).absolute()
     for fn in ['raw_video.mp4', 'imu_data.json']:
         assert video_dir.joinpath(fn).is_file()
@@ -59,10 +60,16 @@ def main(input_dir, map_path, slam_settings, docker_image, no_docker_pull, no_ma
     json_path = mount_target.joinpath('imu_data.json')
     mask_path = mount_target.joinpath('slam_mask.png')
     if not no_mask:
+        mask_config = load_mask_json(mask_json) if mask_json else None
         mask_write_path = video_dir.joinpath('slam_mask.png')
-        slam_mask = np.zeros((2028, 2704), dtype=np.uint8)
+        import av
+        with av.open(str(video_dir.joinpath('raw_video.mp4').absolute())) as c:
+            s = c.streams.video[0]
+            vid_h, vid_w = s.height, s.width
+        slam_mask = np.zeros((vid_h, vid_w), dtype=np.uint8)
         slam_mask = draw_predefined_mask(
-            slam_mask, color=255, mirror=True, gripper=False, finger=True)
+            slam_mask, color=255, mirror=True, gripper=False, finger=True,
+            mask_config=mask_config)
         cv2.imwrite(str(mask_write_path.absolute()), slam_mask)
 
     map_mount_source = pathlib.Path(map_path)

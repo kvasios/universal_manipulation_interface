@@ -25,8 +25,9 @@ from tqdm import tqdm
 @click.option('-i', '--input_dir', required=True, help='Directory for demos folder')
 @click.option('-ci', '--camera_intrinsics', required=True, help='Camera intrinsics json file (2.7k)')
 @click.option('-ac', '--aruco_yaml', required=True, help='Aruco config yaml file')
+@click.option('-mj', '--mask_json', default=None, help='Mask JSON for mirror mask polygons. Defaults to umi/asset/mask.json.')
 @click.option('-n', '--num_workers', type=int, default=None)
-def main(input_dir, camera_intrinsics, aruco_yaml, num_workers):
+def main(input_dir, camera_intrinsics, aruco_yaml, mask_json, num_workers):
     input_dir = pathlib.Path(os.path.expanduser(input_dir))
     input_video_dirs = [x.parent for x in input_dir.glob('*/raw_video.mp4')]
     print(f'Found {len(input_video_dirs)} video dirs')
@@ -60,6 +61,8 @@ def main(input_dir, camera_intrinsics, aruco_yaml, num_workers):
                     '--aruco_yaml', aruco_yaml,
                     '--num_workers', '1'
                 ]
+                if mask_json is not None:
+                    cmd.extend(['--mask_json', str(mask_json)])
 
                 if len(futures) >= num_workers:
                     # limit number of inflight tasks

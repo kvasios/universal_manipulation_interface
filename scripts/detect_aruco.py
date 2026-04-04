@@ -21,7 +21,8 @@ from umi.common.cv_util import (
     parse_fisheye_intrinsics,
     convert_fisheye_intrinsics_resolution,
     detect_localize_aruco_tags,
-    draw_predefined_mask
+    draw_predefined_mask,
+    load_mask_json
 )
 
 # %%
@@ -31,7 +32,8 @@ from umi.common.cv_util import (
 @click.option('-ij', '--intrinsics_json', required=True)
 @click.option('-ay', '--aruco_yaml', required=True)
 @click.option('-n', '--num_workers', type=int, default=4)
-def main(input, output, intrinsics_json, aruco_yaml, num_workers):
+@click.option('-mj', '--mask_json', default=None, help='Mask JSON for mirror mask polygons. Defaults to umi/asset/mask.json.')
+def main(input, output, intrinsics_json, aruco_yaml, num_workers, mask_json):
     cv2.setNumThreads(num_workers)
 
     # load aruco config
@@ -41,6 +43,8 @@ def main(input, output, intrinsics_json, aruco_yaml, num_workers):
 
     # load intrinsics
     raw_fisheye_intr = parse_fisheye_intrinsics(json.load(open(intrinsics_json, 'r')))
+
+    mask_config = load_mask_json(mask_json) if mask_json else None
 
     results = list()
     with av.open(os.path.expanduser(input)) as in_container:
@@ -56,7 +60,8 @@ def main(input, output, intrinsics_json, aruco_yaml, num_workers):
             img = frame.to_ndarray(format='rgb24')
             frame_cts_sec = frame.pts * in_stream.time_base
             # avoid detecting tags in the mirror
-            img = draw_predefined_mask(img, color=(0,0,0), mirror=True, gripper=False, finger=False)
+            img = draw_predefined_mask(img, color=(0,0,0), mirror=True, gripper=False, finger=False,
+                                       mask_config=mask_config)
             tag_dict = detect_localize_aruco_tags(
                 img=img,
                 aruco_dict=aruco_dict,
